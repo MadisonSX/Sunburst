@@ -1,0 +1,7 @@
+# R Package Dependencies for Sunburst Chart Project
+
+plotly          # Interactive visualization library
+ggplot2         # Grammar of graphics visualization
+dplyr           # Data manipulation
+tidyr           # Data tidying
+scales          # Scale functions for visualization

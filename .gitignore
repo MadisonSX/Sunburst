@@ -1,0 +1,10 @@
+# 文件夹
+.github/
+.Rproj.user
+data/
+output/
+
+# 文件
+.RData
+.Rhistory
+Transdiag.Rproj
