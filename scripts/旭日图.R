@@ -1,18 +1,64 @@
 # nolint: start (Pylance 无法识别 dplyr NSE 的非标准求值语言特性，产生虚假警告)
-# 加载必要的包
-library(readxl)
-library(ggplot2)
-library(dplyr)
-library(RColorBrewer)
-library(stringr)
-library(scales)
-library(geomtextpath)
 
-# 规范化文本：替换特殊字符和 Unicode 字符，确保兼容性
-normalize_text <- function(text) {
-  if (is.na(text) || text == "") return(text)
+# ============================================================================
+# 配置参数
+# ============================================================================
+CONFIG <- list(
+  # 文件路径
+  data_file = "data/旭日图数据.xlsx",
+  output_file = "output/旭日图.png",
   
-  # 替换 Unicode 罗马数字为 ASCII 等价
+  # 图形参数
+  plot_width = 14,
+  plot_height = 14,
+  plot_dpi = 300,
+  plot_bg = "#f8f9fa",
+  
+  # 层级半径（内到外）
+  radius = list(
+    inner = 0.2,      # 中心空白
+    level1_min = 2.5,
+    level1_max = 4.0,
+    level2_min = 4.0,
+    level2_max = 5.1,
+    level3_min = 5.1,
+    level3_max = 5.9,
+    outer = 6.1       # 外围边界
+  ),
+  
+  # 标签参数
+  label = list(
+    max_chars = c(8, 10, 8),  # 各层最大字符数
+    sizes = c(8, 6, 5),       # 各层字体大小
+    min_sector_deg = 6        # 最小扇区角度（度）
+  ),
+  
+  # 边框和透明度
+  border_width = 1.3,
+  alpha = 0.96
+)
+
+# ============================================================================
+# 加载必要的包
+# ============================================================================
+required_packages <- c("readxl", "ggplot2", "dplyr", "RColorBrewer", 
+                       "stringr", "scales", "geomtextpath")
+
+for (pkg in required_packages) {
+  if (!require(pkg, character.only = TRUE, quietly = TRUE)) {
+    stop(sprintf("缺少必需的包：%s。请运行 install.packages('%s')", pkg, pkg))
+  }
+}
+
+# ============================================================================
+# 工具函数
+# ============================================================================
+
+#' 规范化文本：替换特殊字符和 Unicode 字符，确保兼容性
+#' @param text 输入文本字符串或字符向量
+#' @return 规范化后的文本
+normalize_text <- function(text) {
+  # 批量替换 Unicode 罗马数字为 ASCII 等价
   replacements <- c(
     "Ⅰ" = "I", "ⅰ" = "i",
     "Ⅱ" = "II", "ⅱ" = "ii",
@@ -23,58 +69,24 @@ normalize_text <- function(text) {
     "Ⅶ" = "VII", "ⅶ" = "vii",
     "Ⅷ" = "VIII", "ⅷ" = "viii",
     "Ⅸ" = "IX", "ⅸ" = "ix",
-    "Ⅹ" = "X", "ⅹ" = "x"
+    "Ⅹ" = "X", "ⅹ" = "x",
+    "–" = "-",  # en dash
+    "—" = "-",  # em dash
+    "−" = "-"   # 数学减号
   )
   
-  for (k in names(replacements)) {
-    text <- stringr::str_replace_all(text, fixed(k), replacements[[k]])
+  # 逐个替换以确保向量化正确
+  for (pattern in names(replacements)) {
+    text <- stringr::str_replace_all(text, stringr::fixed(pattern), replacements[pattern])
   }
-  
-  # 替换特殊短划线为标准短划线
-  text <- stringr::str_replace_all(text, "–", "-")  # en dash
-  text <- stringr::str_replace_all(text, "—", "-")  # em dash
-  text <- stringr::str_replace_all(text, "−", "-")  # 数学减号
   
   return(text)
 }
 
-# 创建output文件夹（如果不存在）
-if (!dir.exists("output")) dir.create("output", recursive = TRUE, showWarnings = FALSE)
-
-# 读取数据：增加第4列 count（数值），并指定 col_types 以减少解析错误
-# Excel 表格第一行为数据（没有表头），因此使用 col_names 来命名列
-data <- read_excel("data/旭日图数据.xlsx", 
-                   col_names = c("category", "subcategory", "therapy", "count"),
-                   col_types = c("text", "text", "text", "numeric"))
-
-# 数据预处理 - 简化版本
-data_clean <- data %>%
-  # 去除完全空白的行
-  filter(!(is.na(category) & is.na(subcategory) & is.na(therapy) & is.na(count))) %>%
-  # 去除category为空的行
-  filter(!is.na(category) & category != "") %>%
-  # 将空值转换为空白字符串
-  mutate(
-    subcategory = ifelse(is.na(subcategory) | subcategory == "", "", as.character(subcategory)),
-    therapy = ifelse(is.na(therapy) | therapy == "", "", as.character(therapy)),
-    category = as.character(category),
-    # 确保 count 为数值，缺失或 <=0 的行默认赋值 1（表示至少一项）
-    count = as.numeric(count),
-    count = ifelse(is.na(count) | count <= 0, 1, count)
-  ) %>%
-  # 规范化所有文本（替换特殊字符）
-  mutate(
-    category = sapply(category, normalize_text, USE.NAMES = FALSE),
-    subcategory = sapply(subcategory, normalize_text, USE.NAMES = FALSE),
-    therapy = sapply(therapy, normalize_text, USE.NAMES = FALSE)
-  )
-
-# 获取分类的原始顺序
-category_order <- unique(data_clean$category)
-cat("分类原始顺序:\n")
-print(category_order)
-
-# 智能换行函数 - 不拆分单词
+#' 智能换行函数 - 不拆分单词
+#' @param text 输入文本
+#' @param max_chars 每行最大字符数
+#' @return 换行后的文本
 smart_wrap <- function(text, max_chars = 10) {
   if (is.na(text) || text == "") return(text)
   
@@ -89,8 +101,88 @@ smart_wrap <- function(text, max_chars = 10) {
   return(wrapped)
 }
 
-# 准备旭日图数据（保持原始顺序）
+#' 验证数据完整性
+#' @param data 数据框
+#' @return 逻辑值，TRUE 表示通过验证
+validate_data <- function(data) {
+  if (nrow(data) == 0) {
+    stop("数据文件为空")
+  }
+  
+  required_cols <- c("category", "subcategory", "therapy", "count")
+  if (!all(required_cols %in% names(data))) {
+    stop("数据缺少必需的列")
+  }
+  
+  if (all(is.na(data$category))) {
+    stop("所有分类都为空")
+  }
+  
+  return(TRUE)
+}
+
+# 数据预处理
+cat("正在清洗数据...\n")
+data_clean <- data %>%
+  # 去除完全空白的行
+  filter(!(is.na(category) & is.na(subcategory) & is.na(therapy) & is.na(count))) %>%
+  # 去除category为空的行
+  filter(!is.na(category) & category != "") %>%
+  # 将空值转换为空白字符串，确保 count 为数值
+  mutate(
+    category = as.character(category),
+    subcategory = ifelse(is.na(subcategory) | subcategory == "", "", as.character(subcategory)),
+    therapy = ifelse(is.na(therapy) | therapy == "", "", as.character(therapy)),
+    count = as.numeric(count),
+    count = ifelse(is.na(count) | count <= 0, 1, count),
+    # 规范化文本（现在 normalize_text 支持向量化操作）
+    category = normalize_text(category),
+    subcategory = normalize_text(subcategory),
+    therapy = normalize_text(therapy)
+  )
+
+# 获取分类的原始顺序
+category_order <- unique(data_clean$category)
+cat("分类数量:", length(category_order), "\n")
+cat("分类列表:", paste(category_order, collapse = ", "), "\n")
+
+# ============================================================================
+# 数据加载和预处理
+# ============================================================================
+
+# 创建输出文件夹
+if (!dir.exists("output")) dir.create("output", recursive = TRUE, showWarnings = FALSE)
+
+# 检查数据文件是否存在
+if (!file.exists(CONFIG$data_file)) {
+  stop(sprintf("数据文件不存在：%s", CONFIG$data_file))
+}
+
+# 读取数据
+cat("正在读取数据...\n")
+data <- tryCatch({
+  read_excel(CONFIG$data_file, 
+             col_names = c("category", "subcategory", "therapy", "count"),
+             col_types = c("text", "text", "text", "numeric"))
+}, error = function(e) {
+  stop(sprintf("读取数据文件失败：%s", e$message))
+})
+
+# 验证数据
+validate_data(data)
+
+# ============================================================================
+# 准备旭日图数据
+# ============================================================================
+
+#' 准备旭日图数据（保持原始顺序）
+#' @param data 清洗后的数据
+#' @param category_order 分类的原始顺序
+#' @return 旭日图数据框
 prepare_sunburst_data <- function(data, category_order) {
+  cfg <- CONFIG$radius
+  label_cfg <- CONFIG$label
+  
   # 第一层：分类（使用 count 的和来表示权重），按照原始顺序
   level1 <- data %>%
     group_by(category) %>%
@@ -101,20 +193,19 @@ prepare_sunburst_data <- function(data, category_order) {
     mutate(
       ymax = cumsum(count),
       ymin = c(0, head(ymax, n = -1)),
-      xmin = 2.5,
-      xmax = 4.0,
-      label = sapply(category, smart_wrap, max_chars = 8),  # 应用智能换行
+      xmin = cfg$level1_min,
+      xmax = cfg$level1_max,
+      label = sapply(category, smart_wrap, max_chars = label_cfg$max_chars[1], USE.NAMES = FALSE),
       level = 1,
-      label_x = 3.25,
+      label_x = (cfg$level1_min + cfg$level1_max) / 2,
       label_y = (ymin + ymax) / 2,
-      category = as.character(category)  # 转换回字符类型以便后续操作
+      category = as.character(category)
     )
   
   # 第二层：亚分类（如果有内容），保持原始顺序
   level2 <- data %>%
     group_by(category, subcategory) %>%
     summarise(count = sum(count, na.rm = TRUE), .groups = 'drop') %>%
-    # 按照原始顺序排序
     mutate(category = factor(category, levels = category_order)) %>%
     arrange(category) %>%
     left_join(level1 %>% select(category, cat_ymin = ymin, cat_ymax = ymax), 
@@ -125,23 +216,21 @@ prepare_sunburst_data <- function(data, category_order) {
       ymax = cat_ymin + cumsum(prop) * (cat_ymax - cat_ymin),
       ymin = cat_ymin + c(0, head(cumsum(prop), n = -1)) * (cat_ymax - cat_ymin),
       ymin = ifelse(is.na(ymin), cat_ymin, ymin),
-      xmin = 4.0,
-      xmax = 5.1,
-      label = sapply(subcategory, smart_wrap, max_chars = 10),  # 应用智能换行
+      xmin = cfg$level2_min,
+      xmax = cfg$level2_max,
+      label = sapply(subcategory, smart_wrap, max_chars = label_cfg$max_chars[2], USE.NAMES = FALSE),
       level = 2,
-      label_x = 4.55,
+      label_x = (cfg$level2_min + cfg$level2_max) / 2,
       label_y = (ymin + ymax) / 2,
-      category = as.character(category)  # 转换回字符类型
+      category = as.character(category)
     ) %>%
     select(category, subcategory, label, xmin, xmax, ymin, ymax, level, label_x, label_y)
   
   # 第三层：疗法，保持原始顺序，过滤掉疗法为空的记录
   level3 <- data %>%
-    # 过滤掉疗法为空的记录
     filter(therapy != "") %>%
     group_by(category, subcategory, therapy) %>%
     summarise(count = sum(count, na.rm = TRUE), .groups = 'drop') %>%
-    # 按照原始顺序排序
     mutate(category = factor(category, levels = category_order)) %>%
     arrange(category) %>%
     left_join(level2 %>% select(category, subcategory, sub_ymin = ymin, sub_ymax = ymax), 
@@ -152,13 +241,13 @@ prepare_sunburst_data <- function(data, category_order) {
       ymax = sub_ymin + cumsum(prop) * (sub_ymax - sub_ymin),
       ymin = sub_ymin + c(0, head(cumsum(prop), n = -1)) * (sub_ymax - sub_ymin),
       ymin = ifelse(is.na(ymin), sub_ymin, ymin),
-      xmin = 5.1,
-      xmax = 5.9,
-      label = sapply(therapy, smart_wrap, max_chars = 8),  # 应用智能换行
+      xmin = cfg$level3_min,
+      xmax = cfg$level3_max,
+      label = sapply(therapy, smart_wrap, max_chars = label_cfg$max_chars[3], USE.NAMES = FALSE),
       level = 3,
-      label_x = 5.5,
+      label_x = (cfg$level3_min + cfg$level3_max) / 2,
       label_y = (ymin + ymax) / 2,
-      category = as.character(category)  # 转换回字符类型
+      category = as.character(category)
     ) %>%
     select(category, label, xmin, xmax, ymin, ymax, level, label_x, label_y)
   
@@ -174,19 +263,24 @@ prepare_sunburst_data <- function(data, category_order) {
 }
 
 # 准备数据
+cat("正在准备旭日图数据...\n")
 sunburst_data <- prepare_sunburst_data(data_clean, category_order)
 
-# 检查数据结构
+# 数据统计
 cat("\n数据层次结构:\n")
-cat("第一层(分类)记录数:", nrow(filter(sunburst_data, level == 1)), "\n")
-cat("第二层(亚分类)记录数:", nrow(filter(sunburst_data, level == 2)), "\n")
-cat("第三层(疗法)记录数:", nrow(filter(sunburst_data, level == 3)), "\n")
+cat("├─ 第一层(分类):", nrow(filter(sunburst_data, level == 1)), "项\n")
+cat("├─ 第二层(亚分类):", nrow(filter(sunburst_data, level == 2)), "项\n")
+cat("└─ 第三层(疗法):", nrow(filter(sunburst_data, level == 3)), "项\n")
 
-# 检查疗法为空的情况
 therapy_empty_count <- nrow(data_clean %>% filter(therapy == ""))
-cat("疗法为空的记录数:", therapy_empty_count, "\n")
+if (therapy_empty_count > 0) {
+  cat("注: 疗法为空的记录数:", therapy_empty_count, "（已从第三层过滤）\n")
+}
 
-# 设置颜色（保持原始顺序）
+# ============================================================================
+# 设置颜色方案
+# ============================================================================
+cat("\n正在设置颜色方案...\n")
 n_categories <- length(category_order)
 
 # 使用高对比度色系
@@ -201,35 +295,39 @@ if (n_categories <= 8) {
 # 按照原始顺序分配颜色
 category_colors <- setNames(color_palette[seq_len(n_categories)], category_order)
 
-# 创建环状旭日图（优化美观性）
+# ============================================================================
+# 创建环状旭日图
+# ============================================================================
+cat("正在生成旭日图...\n")
+
 sunburst_plot <- ggplot(sunburst_data) +
-  # 绘制矩形（增加边框宽度和对比度）
-  geom_rect(aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax,
-                fill = category),
-            color = "white", linewidth = 1.3, alpha = 0.96) +
-  # 转换为极坐标
+  geom_rect(aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, fill = category),
+            color = "white", linewidth = CONFIG$border_width, alpha = CONFIG$alpha) +
   coord_polar(theta = "y", start = 0, clip = "off") +
-  # 最小化外周留白：调整 x 轴范围使其紧凑
-  xlim(0.2, 6.1) +
-  # 设置颜色（按照原始顺序）
+  xlim(CONFIG$radius$inner, CONFIG$radius$outer) +
   scale_fill_manual(values = category_colors) +
-  # 改进主题：现代简洁风格
   theme_void() +
   theme(
-    plot.background = element_rect(fill = "#f8f9fa", color = NA),
-    panel.background = element_rect(fill = "#f8f9fa", color = NA),
+    plot.background = element_rect(fill = CONFIG$plot_bg, color = NA),
+    panel.background = element_rect(fill = CONFIG$plot_bg, color = NA),
     legend.position = "none",
-    plot.margin = margin(0, 0, 0, 0)  # 无外周留白
+    plot.margin = margin(0, 0, 0, 0)
   )
 
-# 标签添加函数 - 简单有效的版本
-add_textpath_labels <- function(plot, data, levels = 1:3, min_sector_deg = 6) {
+#' 标签添加函数 - 沿弧路径绘制文本
+#' @param plot ggplot对象
+#' @param data 旭日图数据
+#' @param levels 要添加标签的层级
+#' @param min_sector_deg 最小扇区角度（度）
+#' @return 添加了标签的ggplot对象
+add_textpath_labels <- function(plot, data, levels = 1:3, 
+                                min_sector_deg = CONFIG$label$min_sector_deg) {
   max_y <- max(data$ymax, na.rm = TRUE)
+  label_sizes <- CONFIG$label$sizes
   
   for (lvl in levels) {
     level_data <- data %>%
-      filter(level == lvl) %>%
-      filter(label != "") %>%
+      filter(level == lvl, label != "") %>%
       mutate(
         sector_angle = (ymax - ymin) / max_y * 360,
         center_y = (ymin + ymax) / 2
@@ -238,7 +336,7 @@ add_textpath_labels <- function(plot, data, levels = 1:3, min_sector_deg = 6) {
     
     if (nrow(level_data) == 0) next
     
-    # 为每个标签生成一条弧路径（在极坐标下，y 映射为角度）
+    # 为每个标签生成一条弧路径
     n_points <- 160
     path_list <- lapply(seq_len(nrow(level_data)), function(i) {
       row <- level_data[i, ]
@@ -254,9 +352,8 @@ add_textpath_labels <- function(plot, data, levels = 1:3, min_sector_deg = 6) {
     
     path_df <- do.call(rbind, path_list)
     
-    # 分别设置各层文字大小和颜色
-    size_map <- c(`1` = 8, `2` = 6, `3` = 5)
-    txt_size <- ifelse(as.character(lvl) %in% names(size_map), size_map[as.character(lvl)], 5)
+    # 获取该层的字体大小
+    txt_size <- if (lvl <= length(label_sizes)) label_sizes[lvl] else 5
     
     plot <- plot +
       geom_textpath(
@@ -267,7 +364,6 @@ add_textpath_labels <- function(plot, data, levels = 1:3, min_sector_deg = 6) {
         color = "white",
         fontface = "bold",
         upright = TRUE,
-        # 避免文本彼此重叠过多
         vjust = 0.5
       )
   }
@@ -275,40 +371,53 @@ add_textpath_labels <- function(plot, data, levels = 1:3, min_sector_deg = 6) {
   return(plot)
 }
 
-# 使用 geomtextpath 沿弧添加标签
+# 添加标签
 sunburst_plot <- add_textpath_labels(sunburst_plot, sunburst_data, levels = 1:3)
+
+# ============================================================================
+# 保存和输出
+# ============================================================================
+cat("正在保存图形...\n")
+
+# 保存图形
+ggsave(CONFIG$output_file, sunburst_plot,
+       width = CONFIG$plot_width, 
+       height = CONFIG$plot_height, 
+       dpi = CONFIG$plot_dpi, 
+       bg = CONFIG$plot_bg,
+       limitsize = FALSE)
 
 # 显示图形
 print(sunburst_plot)
 
-# 保存图形（高质量输出，紧凑尺寸）
-output_file <- "output/旭日图.png"
-ggsave(output_file, sunburst_plot,
-       width = 14, height = 14, dpi = 300, bg = "#f8f9fa",
-       limitsize = FALSE)
-
-cat("\n═══════════════════════════════════════════════════════════\n")
+# 输出摘要信息
+cat("\n")
+cat("═══════════════════════════════════════════════════════════\n")
 cat("✓ 旭日图已成功生成！\n")
 cat("═══════════════════════════════════════════════════════════\n")
-cat("📁 保存路径：", output_file, "\n")
-cat("📊 图像尺寸：14×14 英寸 (300 DPI)，圆形紧凑\n")
-cat("🎨 样式：优化色系 + 白色文本标签\n")
-cat("📝 标签：沿圆弧排列，上半部分向圆心，下半部分向外\n")
-cat("🔢 分类顺序：保持原始表格顺序\n")
-cat("🗑️  外层疗法：疗法为空的记录已被过滤，不显示在最外层\n")
+cat(sprintf("📁 保存路径: %s\n", CONFIG$output_file))
+cat(sprintf("📊 图像尺寸: %d×%d 英寸 (%d DPI)\n", 
+            CONFIG$plot_width, CONFIG$plot_height, CONFIG$plot_dpi))
+cat(sprintf("🎨 配色方案: %s (%d种颜色)\n", 
+            ifelse(n_categories <= 8, "Dark2", 
+                   ifelse(n_categories <= 12, "Paired", "扩展Paired")),
+            n_categories))
+cat("📝 特性: 沿弧排列标签，智能换行，保持原始顺序\n")
 cat("═══════════════════════════════════════════════════════════\n")
 
-# 输出换行统计
-cat("\n换行统计:\n")
+# 输出标签换行统计
+cat("\n标签换行统计:\n")
 for (lvl in 1:3) {
   level_data <- sunburst_data %>% filter(level == lvl, label != "")
   if (nrow(level_data) == 0) next
   
-  wrapped_labels <- level_data$label
-  wrapped_count <- sum(str_detect(wrapped_labels, "\n"))
+  wrapped_count <- sum(str_detect(level_data$label, "\n"))
   total_count <- nrow(level_data)
-  
   pct <- if (total_count > 0) wrapped_count / total_count * 100 else 0
-  cat(sprintf("第%d层: %d 个标签，其中 %d 个被换行显示 (%.1f%%)\n", lvl, total_count, wrapped_count, pct))
+  
+  cat(sprintf("├─ 第%d层: %d/%d 标签换行 (%.1f%%)\n", 
+              lvl, wrapped_count, total_count, pct))
 }
+
+cat("\n处理完成！\n")
 # nolint: end
