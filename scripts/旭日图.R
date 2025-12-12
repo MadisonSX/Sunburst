@@ -141,6 +141,14 @@ data_clean <- data %>%
     therapy = normalize_text(therapy)
   )
 
+# 添加highlight列（如果不存在）
+if (!"highlight" %in% names(data_clean)) {
+  data_clean$highlight <- "Yes"
+} else {
+  data_clean <- data_clean %>%
+    mutate(highlight = ifelse(is.na(highlight) | highlight == "", "Yes", as.character(highlight)))
+}
+
 # 获取分类的原始顺序
 category_order <- unique(data_clean$category)
 cat("分类数量:", length(category_order), "\n")
@@ -161,9 +169,23 @@ if (!file.exists(CONFIG$data_file)) {
 # 读取数据
 cat("正在读取数据...\n")
 data <- tryCatch({
-  read_excel(CONFIG$data_file, 
-             col_names = c("category", "subcategory", "therapy", "count"),
-             col_types = c("text", "text", "text", "numeric"))
+  # 先读取前4列，然后检查是否有第5列
+  data_raw <- read_excel(CONFIG$data_file, col_names = FALSE)
+  n_cols <- ncol(data_raw)
+  
+  if (n_cols >= 5) {
+    # 有5列或更多，读取前5列
+    read_excel(CONFIG$data_file, 
+               col_names = c("category", "subcategory", "therapy", "count", "highlight"),
+               col_types = c("text", "text", "text", "numeric", "text"))
+  } else {
+    # 只有4列，读取后添加highlight列
+    data_temp <- read_excel(CONFIG$data_file, 
+                            col_names = c("category", "subcategory", "therapy", "count"),
+                            col_types = c("text", "text", "text", "numeric"))
+    data_temp$highlight <- "Yes"
+    data_temp
+  }
 }, error = function(e) {
   stop(sprintf("读取数据文件失败：%s", e$message))
 })
@@ -184,12 +206,18 @@ prepare_sunburst_data <- function(data, category_order) {
   label_cfg <- CONFIG$label
   
   # 第一层：分类（使用 count 的和来表示权重），按照原始顺序
+  # 判断该分类下是否所有行都是No
+  category_highlight <- data %>%
+    group_by(category) %>%
+    summarise(is_highlighted = !all(highlight == "No"), .groups = "drop")
+  
   level1 <- data %>%
     group_by(category) %>%
     summarise(count = sum(count, na.rm = TRUE), .groups = "drop") %>%
     # 按照原始顺序排序
     mutate(category = factor(category, levels = category_order)) %>%
     arrange(category) %>%
+    left_join(category_highlight, by = "category") %>%
     mutate(
       ymax = cumsum(count),
       ymin = c(0, head(ymax, n = -1)),
@@ -203,11 +231,17 @@ prepare_sunburst_data <- function(data, category_order) {
     )
   
   # 第二层：亚分类（包括空值，保留为空块），保持原始顺序
+  # 判断该亚分类下是否所有行都是No
+  subcategory_highlight <- data %>%
+    group_by(category, subcategory) %>%
+    summarise(is_highlighted = !all(highlight == "No"), .groups = "drop")
+  
   level2 <- data %>%
     group_by(category, subcategory) %>%
     summarise(count = sum(count, na.rm = TRUE), .groups = 'drop') %>%
     mutate(category = factor(category, levels = category_order)) %>%
     arrange(category) %>%
+    left_join(subcategory_highlight, by = c("category", "subcategory")) %>%
     left_join(level1 %>% select(category, cat_ymin = ymin, cat_ymax = ymax), 
               by = "category") %>%
     group_by(category) %>%
@@ -225,14 +259,20 @@ prepare_sunburst_data <- function(data, category_order) {
       label_y = (ymin + ymax) / 2,
       category = as.character(category)
     ) %>%
-    select(category, subcategory, label, xmin, xmax, ymin, ymax, level, label_x, label_y)
+    select(category, subcategory, label, xmin, xmax, ymin, ymax, level, label_x, label_y, is_highlighted)
   
   # 第三层：疗法（包括空值，保留为空块），保持原始顺序
+  # 获取每个疗法的highlight状态
+  therapy_highlight <- data %>%
+    group_by(category, subcategory, therapy) %>%
+    summarise(is_highlighted = !all(highlight == "No"), .groups = "drop")
+  
   level3 <- data %>%
     group_by(category, subcategory, therapy) %>%
     summarise(count = sum(count, na.rm = TRUE), .groups = 'drop') %>%
     mutate(category = factor(category, levels = category_order)) %>%
     arrange(category) %>%
+    left_join(therapy_highlight, by = c("category", "subcategory", "therapy")) %>%
     left_join(level2 %>% select(category, subcategory, sub_ymin = ymin, sub_ymax = ymax), 
               by = c("category", "subcategory")) %>%
     group_by(category, subcategory) %>%
@@ -250,12 +290,12 @@ prepare_sunburst_data <- function(data, category_order) {
       label_y = (ymin + ymax) / 2,
       category = as.character(category)
     ) %>%
-    select(category, label, xmin, xmax, ymin, ymax, level, label_x, label_y)
+    select(category, label, xmin, xmax, ymin, ymax, level, label_x, label_y, is_highlighted)
   
   # 合并所有数据
   sunburst_data <- bind_rows(
-    level1 %>% select(category, label, xmin, xmax, ymin, ymax, level, label_x, label_y),
-    level2 %>% select(category, label, xmin, xmax, ymin, ymax, level, label_x, label_y),
+    level1 %>% select(category, label, xmin, xmax, ymin, ymax, level, label_x, label_y, is_highlighted),
+    level2 %>% select(category, label, xmin, xmax, ymin, ymax, level, label_x, label_y, is_highlighted),
     level3
   ) %>%
     arrange(level, ymin)
@@ -293,8 +333,26 @@ if (n_categories <= 8) {
   color_palette <- colorRampPalette(brewer.pal(12, "Paired"))(n_categories)
 }
 
-# 按照原始顺序分配颜色
+# 按照原始顺序分配颜色（深色）
 category_colors <- setNames(color_palette[seq_len(n_categories)], category_order)
+
+# 生成浅色版本（用于highlight为No的块）
+lighten_color <- function(color, amount = 0.6) {
+  # 将颜色转换为RGB，然后增加亮度
+  rgb_vals <- col2rgb(color) / 255
+  rgb_vals <- rgb_vals + (1 - rgb_vals) * amount
+  rgb(rgb_vals[1], rgb_vals[2], rgb_vals[3])
+}
+
+category_colors_light <- sapply(category_colors, lighten_color)
+
+# 为每个块分配颜色（根据is_highlighted）
+sunburst_data <- sunburst_data %>%
+  mutate(
+    color = ifelse(is_highlighted, 
+                   category_colors[category], 
+                   category_colors_light[category])
+  )
 
 # ============================================================================
 # 创建环状旭日图
@@ -302,11 +360,11 @@ category_colors <- setNames(color_palette[seq_len(n_categories)], category_order
 cat("正在生成旭日图...\n")
 
 sunburst_plot <- ggplot(sunburst_data) +
-  geom_rect(aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, fill = category),
+  geom_rect(aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, fill = color),
             color = "white", linewidth = CONFIG$border_width, alpha = CONFIG$alpha) +
   coord_polar(theta = "y", start = 0, clip = "off") +
   xlim(CONFIG$radius$inner, CONFIG$radius$outer) +
-  scale_fill_manual(values = category_colors) +
+  scale_fill_identity() +
   theme_void() +
   theme(
     plot.background = element_rect(fill = CONFIG$plot_bg, color = NA),
