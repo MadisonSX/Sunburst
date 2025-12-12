@@ -28,7 +28,7 @@ CONFIG <- list(
   
   # 标签参数
   label = list(
-    max_chars = c(8, 10, 8),  # 各层最大字符数
+    max_chars = c(8, 20, 8),  # 各层最大字符数
     sizes = c(8, 6, 5),       # 各层字体大小
     min_sector_deg = 6        # 最小扇区角度（度）
   ),
@@ -202,7 +202,7 @@ prepare_sunburst_data <- function(data, category_order) {
       category = as.character(category)
     )
   
-  # 第二层：亚分类（如果有内容），保持原始顺序
+  # 第二层：亚分类（包括空值，保留为空块），保持原始顺序
   level2 <- data %>%
     group_by(category, subcategory) %>%
     summarise(count = sum(count, na.rm = TRUE), .groups = 'drop') %>%
@@ -218,7 +218,8 @@ prepare_sunburst_data <- function(data, category_order) {
       ymin = ifelse(is.na(ymin), cat_ymin, ymin),
       xmin = cfg$level2_min,
       xmax = cfg$level2_max,
-      label = sapply(subcategory, smart_wrap, max_chars = label_cfg$max_chars[2], USE.NAMES = FALSE),
+      # 空值亚分类不显示标签，但保留颜色块
+      label = ifelse(subcategory == "", "", sapply(subcategory, smart_wrap, max_chars = label_cfg$max_chars[2], USE.NAMES = FALSE)),
       level = 2,
       label_x = (cfg$level2_min + cfg$level2_max) / 2,
       label_y = (ymin + ymax) / 2,
@@ -226,9 +227,8 @@ prepare_sunburst_data <- function(data, category_order) {
     ) %>%
     select(category, subcategory, label, xmin, xmax, ymin, ymax, level, label_x, label_y)
   
-  # 第三层：疗法，保持原始顺序，过滤掉疗法为空的记录
+  # 第三层：疗法（包括空值，保留为空块），保持原始顺序
   level3 <- data %>%
-    filter(therapy != "") %>%
     group_by(category, subcategory, therapy) %>%
     summarise(count = sum(count, na.rm = TRUE), .groups = 'drop') %>%
     mutate(category = factor(category, levels = category_order)) %>%
@@ -243,7 +243,8 @@ prepare_sunburst_data <- function(data, category_order) {
       ymin = ifelse(is.na(ymin), sub_ymin, ymin),
       xmin = cfg$level3_min,
       xmax = cfg$level3_max,
-      label = sapply(therapy, smart_wrap, max_chars = label_cfg$max_chars[3], USE.NAMES = FALSE),
+      # 空值疗法不显示标签，但保留颜色块
+      label = ifelse(therapy == "", "", sapply(therapy, smart_wrap, max_chars = label_cfg$max_chars[3], USE.NAMES = FALSE)),
       level = 3,
       label_x = (cfg$level3_min + cfg$level3_max) / 2,
       label_y = (ymin + ymax) / 2,
@@ -274,7 +275,7 @@ cat("└─ 第三层(疗法):", nrow(filter(sunburst_data, level == 3)), "项\n
 
 therapy_empty_count <- nrow(data_clean %>% filter(therapy == ""))
 if (therapy_empty_count > 0) {
-  cat("注: 疗法为空的记录数:", therapy_empty_count, "（已从第三层过滤）\n")
+  cat("注: 疗法为空的记录数:", therapy_empty_count, "（已保留为空白块）\n")
 }
 
 # ============================================================================
