@@ -12,16 +12,16 @@ CONFIG <- list(
   plot_width = 14,
   plot_height = 14,
   plot_dpi = 300,
-  plot_bg = "#f8f9fa",
+  plot_bg = "#FFFFFF",
   
   # 层级半径（内到外）
   radius = list(
     inner = 0.2,      # 中心空白
-    level1_min = 2.5,
-    level1_max = 4.0,
-    level2_min = 4.0,
-    level2_max = 5.1,
-    level3_min = 5.1,
+    level1_min = 1.5,
+    level1_max = 3.5,
+    level2_min = 3.5,
+    level2_max = 4.8,
+    level3_min = 4.8,
     level3_max = 5.9,
     outer = 6.1       # 外围边界
   ),
@@ -29,20 +29,22 @@ CONFIG <- list(
   # 标签参数
   label = list(
     max_chars = c(8, 20, 8),  # 各层最大字符数
-    sizes = c(8, 6, 5),       # 各层字体大小
+    sizes = c(7, 6, 5),       # 各层字体大小
     min_sector_deg = 6        # 最小扇区角度（度）
   ),
   
   # 边框和透明度
   border_width = 1.3,
-  alpha = 0.96
+  alpha = 0.96,
+  # 图例排序："none" 不排序，"alpha" 按解释文字 A–Z 排序
+  legend_sort = "alpha"
 )
 
 # ============================================================================
 # 加载必要的包
 # ============================================================================
 required_packages <- c("readxl", "ggplot2", "dplyr", "RColorBrewer", 
-                       "stringr", "scales", "geomtextpath")
+                       "stringr", "scales", "geomtextpath", "cowplot", "grid")
 
 for (pkg in required_packages) {
   if (!require(pkg, character.only = TRUE, quietly = TRUE)) {
@@ -224,6 +226,7 @@ prepare_sunburst_data <- function(data, category_order) {
       xmin = cfg$level1_min,
       xmax = cfg$level1_max,
       label = sapply(category, smart_wrap, max_chars = label_cfg$max_chars[1], USE.NAMES = FALSE),
+      
       level = 1,
       label_x = (cfg$level1_min + cfg$level1_max) / 2,
       label_y = (ymin + ymax) / 2,
@@ -254,6 +257,7 @@ prepare_sunburst_data <- function(data, category_order) {
       xmax = cfg$level2_max,
       # 空值亚分类不显示标签，但保留颜色块
       label = ifelse(subcategory == "", "", sapply(subcategory, smart_wrap, max_chars = label_cfg$max_chars[2], USE.NAMES = FALSE)),
+      
       level = 2,
       label_x = (cfg$level2_min + cfg$level2_max) / 2,
       label_y = (ymin + ymax) / 2,
@@ -275,6 +279,8 @@ prepare_sunburst_data <- function(data, category_order) {
     left_join(therapy_highlight, by = c("category", "subcategory", "therapy")) %>%
     left_join(level2 %>% select(category, subcategory, sub_ymin = ymin, sub_ymax = ymax), 
               by = c("category", "subcategory")) %>%
+    # 不再需要 total_y，移除该连接
+    # left_join(level1 %>% select(category, total_y) %>% distinct(), by = "category") %>%
     group_by(category, subcategory) %>%
     mutate(
       prop = count / sum(count),
@@ -285,6 +291,7 @@ prepare_sunburst_data <- function(data, category_order) {
       xmax = cfg$level3_max,
       # 空值疗法不显示标签，但保留颜色块
       label = ifelse(therapy == "", "", sapply(therapy, smart_wrap, max_chars = label_cfg$max_chars[3], USE.NAMES = FALSE)),
+      
       level = 3,
       label_x = (cfg$level3_min + cfg$level3_max) / 2,
       label_y = (ymin + ymax) / 2,
@@ -336,22 +343,15 @@ if (n_categories <= 8) {
 # 按照原始顺序分配颜色（深色）
 category_colors <- setNames(color_palette[seq_len(n_categories)], category_order)
 
-# 生成浅色版本（用于highlight为No的块）
-lighten_color <- function(color, amount = 0.6) {
-  # 将颜色转换为RGB，然后增加亮度
-  rgb_vals <- col2rgb(color) / 255
-  rgb_vals <- rgb_vals + (1 - rgb_vals) * amount
-  rgb(rgb_vals[1], rgb_vals[2], rgb_vals[3])
-}
-
-category_colors_light <- sapply(category_colors, lighten_color)
+# 灰色（用于highlight为No的块）
+gray_color <- "#CCCCCC"
 
 # 为每个块分配颜色（根据is_highlighted）
 sunburst_data <- sunburst_data %>%
   mutate(
     color = ifelse(is_highlighted, 
                    category_colors[category], 
-                   category_colors_light[category])
+                   gray_color)
   )
 
 # ============================================================================
@@ -363,7 +363,7 @@ sunburst_plot <- ggplot(sunburst_data) +
   geom_rect(aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, fill = color),
             color = "white", linewidth = CONFIG$border_width, alpha = CONFIG$alpha) +
   coord_polar(theta = "y", start = 0, clip = "off") +
-  xlim(CONFIG$radius$inner, CONFIG$radius$outer) +
+  xlim(CONFIG$radius$inner, 7.5) +  # 扩大右边界以容纳图示
   scale_fill_identity() +
   theme_void() +
   theme(
@@ -432,6 +432,88 @@ add_textpath_labels <- function(plot, data, levels = 1:3,
 
 # 添加标签
 sunburst_plot <- add_textpath_labels(sunburst_plot, sunburst_data, levels = 1:3)
+
+# ============================================================================
+# 添加图示（Legend）在右下角
+# ============================================================================
+cat("正在生成图示...\n")
+
+# 创建图示数据（可按解释文字 A–Z 排序，灰色 Not included 固定最后）
+legend_categories <- category_order
+legend_colors <- category_colors[legend_categories]
+legend_df <- data.frame(
+  label = legend_categories,
+  color = legend_colors,
+  stringsAsFactors = FALSE
+)
+
+# 按配置排序图例（不影响图中颜色，仅影响图例顺序）
+if (!is.null(CONFIG$legend_sort) && CONFIG$legend_sort == "alpha") {
+  legend_df <- legend_df %>% arrange(label)
+}
+
+# 追加灰色项到末尾
+legend_df <- rbind(legend_df, data.frame(label = "Not included", color = gray_color))
+
+# 计算总项数
+n_items <- nrow(legend_df)
+
+# 使用 cowplot 和 grid 来添加图例
+# 先用 ggdraw 创建画布
+sunburst_plot_with_legend <- cowplot::ggdraw(sunburst_plot)
+
+# 添加图例矩形框和文本（在图片的右下角）
+legend_x_start <- 0.75  # 调整这个值来移动图例左右位置（0-1，越大越靠右）
+legend_y_start <- 0.28
+legend_box_width <- 0.28
+legend_box_height <- 0.02
+legend_spacing <- 0.025
+
+# 添加图例背景框（无边框）
+sunburst_plot_with_legend <- sunburst_plot_with_legend +
+  cowplot::draw_grob(
+    grid::rectGrob(
+      x = legend_x_start + legend_box_width / 2,
+      y = legend_y_start - n_items * legend_spacing / 2,
+      width = legend_box_width,
+      height = n_items * legend_spacing + 0.01,
+      gp = grid::gpar(fill = "white", col = NA)  # col = NA 移除边框线
+    ),
+    x = 0, y = 0, width = 1, height = 1, hjust = 0, vjust = 0
+  )
+
+# 添加每项图例
+for (i in seq_len(n_items)) {
+  y_pos <- legend_y_start - (i - 1) * legend_spacing
+  
+  # 颜色块
+  sunburst_plot_with_legend <- sunburst_plot_with_legend +
+    cowplot::draw_grob(
+      grid::rectGrob(
+        x = legend_x_start + 0.01,
+        y = y_pos,
+        width = 0.04,
+        height = 0.018,
+        gp = grid::gpar(fill = legend_df$color[i], col = "black", lwd = 0.5)
+      ),
+      x = 0, y = 0, width = 1, height = 1, hjust = 0, vjust = 0
+    )
+  
+  # 标签文本
+  sunburst_plot_with_legend <- sunburst_plot_with_legend +
+    cowplot::draw_grob(
+      grid::textGrob(
+        legend_df$label[i],
+        x = legend_x_start + 0.04,
+        y = y_pos,
+        just = c("left", "center"),
+        gp = grid::gpar(fontsize = 14, col = "black")
+      ),
+      x = 0, y = 0, width = 1, height = 1, hjust = 0, vjust = 0
+    )
+}
+
+sunburst_plot <- sunburst_plot_with_legend
 
 # ============================================================================
 # 保存和输出
