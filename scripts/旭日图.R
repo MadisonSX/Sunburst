@@ -151,6 +151,15 @@ if (!"highlight" %in% names(data_clean)) {
     mutate(highlight = ifelse(is.na(highlight) | highlight == "", "Yes", as.character(highlight)))
 }
 
+# 添加rotation列（如果不存在），规范化为小写
+if (!"rotation" %in% names(data_clean)) {
+  data_clean$rotation <- "up"
+} else {
+  data_clean <- data_clean %>%
+    mutate(rotation = tolower(ifelse(is.na(rotation) | rotation == "", "up", as.character(rotation))),
+           rotation = ifelse(rotation == "down", "down", "up"))  # 只允许"up"或"down"
+}
+
 # 获取分类的原始顺序
 category_order <- unique(data_clean$category)
 cat("分类数量:", length(category_order), "\n")
@@ -175,17 +184,25 @@ data <- tryCatch({
   data_raw <- read_excel(CONFIG$data_file, col_names = FALSE)
   n_cols <- ncol(data_raw)
   
-  if (n_cols >= 5) {
-    # 有5列或更多，读取前5列
+  if (n_cols >= 6) {
+    # 有6列或更多，读取前6列
     read_excel(CONFIG$data_file, 
+               col_names = c("category", "subcategory", "therapy", "count", "highlight", "rotation"),
+               col_types = c("text", "text", "text", "numeric", "text", "text"))
+  } else if (n_cols >= 5) {
+    # 有5列，读取前5列，第6列默认为up
+    data_temp <- read_excel(CONFIG$data_file, 
                col_names = c("category", "subcategory", "therapy", "count", "highlight"),
                col_types = c("text", "text", "text", "numeric", "text"))
+    data_temp$rotation <- "up"
+    data_temp
   } else {
-    # 只有4列，读取后添加highlight列
+    # 只有4列，读取后添加highlight和rotation列
     data_temp <- read_excel(CONFIG$data_file, 
                             col_names = c("category", "subcategory", "therapy", "count"),
                             col_types = c("text", "text", "text", "numeric"))
     data_temp$highlight <- "Yes"
+    data_temp$rotation <- "up"
     data_temp
   }
 }, error = function(e) {
@@ -213,6 +230,11 @@ prepare_sunburst_data <- function(data, category_order) {
     group_by(category) %>%
     summarise(is_highlighted = !all(highlight == "No"), .groups = "drop")
   
+  # 获取分类的旋转状态（取该分类下的第一个值）
+  category_rotation <- data %>%
+    group_by(category) %>%
+    summarise(rotation = first(rotation), .groups = "drop")
+  
   level1 <- data %>%
     group_by(category) %>%
     summarise(count = sum(count, na.rm = TRUE), .groups = "drop") %>%
@@ -220,6 +242,7 @@ prepare_sunburst_data <- function(data, category_order) {
     mutate(category = factor(category, levels = category_order)) %>%
     arrange(category) %>%
     left_join(category_highlight, by = "category") %>%
+    left_join(category_rotation, by = "category") %>%
     mutate(
       ymax = cumsum(count),
       ymin = c(0, head(ymax, n = -1)),
@@ -230,6 +253,7 @@ prepare_sunburst_data <- function(data, category_order) {
       level = 1,
       label_x = (cfg$level1_min + cfg$level1_max) / 2,
       label_y = (ymin + ymax) / 2,
+      rotation = ifelse(is.na(rotation), "up", rotation),
       category = as.character(category)
     )
   
@@ -238,6 +262,11 @@ prepare_sunburst_data <- function(data, category_order) {
   subcategory_highlight <- data %>%
     group_by(category, subcategory) %>%
     summarise(is_highlighted = !all(highlight == "No"), .groups = "drop")
+  
+  # 获取亚分类的旋转状态（取该亚分类下的第一个值）
+  subcategory_rotation <- data %>%
+    group_by(category, subcategory) %>%
+    summarise(rotation = first(rotation), .groups = "drop")
   
   level2 <- data %>%
     group_by(category, subcategory) %>%
@@ -263,13 +292,22 @@ prepare_sunburst_data <- function(data, category_order) {
       label_y = (ymin + ymax) / 2,
       category = as.character(category)
     ) %>%
-    select(category, subcategory, label, xmin, xmax, ymin, ymax, level, label_x, label_y, is_highlighted)
+    ungroup() %>%
+    left_join(subcategory_rotation %>% select(category, subcategory, rotation), 
+              by = c("category", "subcategory")) %>%
+    mutate(rotation = ifelse(is.na(rotation), "up", rotation)) %>%
+    select(category, subcategory, label, xmin, xmax, ymin, ymax, level, label_x, label_y, is_highlighted, rotation)
   
   # 第三层：疗法（包括空值，保留为空块），保持原始顺序
   # 获取每个疗法的highlight状态
   therapy_highlight <- data %>%
     group_by(category, subcategory, therapy) %>%
     summarise(is_highlighted = !all(highlight == "No"), .groups = "drop")
+  
+  # 获取疗法的旋转状态（取该疗法下的第一个值）
+  therapy_rotation <- data %>%
+    group_by(category, subcategory, therapy) %>%
+    summarise(rotation = first(rotation), .groups = "drop")
   
   level3 <- data %>%
     group_by(category, subcategory, therapy) %>%
@@ -297,12 +335,16 @@ prepare_sunburst_data <- function(data, category_order) {
       label_y = (ymin + ymax) / 2,
       category = as.character(category)
     ) %>%
-    select(category, label, xmin, xmax, ymin, ymax, level, label_x, label_y, is_highlighted)
+    ungroup() %>%
+    left_join(therapy_rotation %>% select(category, subcategory, therapy, rotation), 
+              by = c("category", "subcategory", "therapy")) %>%
+    mutate(rotation = ifelse(is.na(rotation), "up", rotation)) %>%
+    select(category, label, xmin, xmax, ymin, ymax, level, label_x, label_y, is_highlighted, rotation)
   
   # 合并所有数据
   sunburst_data <- bind_rows(
-    level1 %>% select(category, label, xmin, xmax, ymin, ymax, level, label_x, label_y, is_highlighted),
-    level2 %>% select(category, label, xmin, xmax, ymin, ymax, level, label_x, label_y, is_highlighted),
+    level1 %>% select(category, label, xmin, xmax, ymin, ymax, level, label_x, label_y, is_highlighted, rotation),
+    level2 %>% select(category, label, xmin, xmax, ymin, ymax, level, label_x, label_y, is_highlighted, rotation),
     level3
   ) %>%
     arrange(level, ymin)
@@ -373,7 +415,7 @@ sunburst_plot <- ggplot(sunburst_data) +
     plot.margin = margin(0, 0, 0, 0)
   )
 
-#' 标签添加函数 - 沿弧路径绘制文本
+#' 标签添加函数 - 沿弧路径绘制文本，支持up/down旋转
 #' @param plot ggplot对象
 #' @param data 旭日图数据
 #' @param levels 要添加标签的层级
@@ -389,7 +431,8 @@ add_textpath_labels <- function(plot, data, levels = 1:3,
       filter(level == lvl, label != "") %>%
       mutate(
         sector_angle = (ymax - ymin) / max_y * 360,
-        center_y = (ymin + ymax) / 2
+        center_y = (ymin + ymax) / 2,
+        rotation = ifelse(is.na(rotation), "up", rotation)
       ) %>%
       filter(sector_angle > min_sector_deg)
     
@@ -400,11 +443,18 @@ add_textpath_labels <- function(plot, data, levels = 1:3,
     path_list <- lapply(seq_len(nrow(level_data)), function(i) {
       row <- level_data[i, ]
       yseq <- seq(row$ymin, row$ymax, length.out = n_points)
+      
+      # 如果rotation为"down"，反转yseq顺序以实现180度旋转
+      if (!is.na(row$rotation) && row$rotation == "down") {
+        yseq <- rev(yseq)
+      }
+      
       data.frame(
         x = rep(row$label_x, n_points),
         y = yseq,
         label = rep(as.character(row$label), n_points),
         id = rep(paste0("L", lvl, "_", i), n_points),
+        rotation = rep(row$rotation, n_points),
         stringsAsFactors = FALSE
       )
     })
