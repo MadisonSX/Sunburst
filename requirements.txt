@@ -4,4 +4,5 @@ plotly          # Interactive visualization library
 ggplot2         # Grammar of graphics visualization
 dplyr           # Data manipulation
 tidyr           # Data tidying
+readxl          # Read Excel files
 scales          # Scale functions for visualization
