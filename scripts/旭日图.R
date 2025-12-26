@@ -123,48 +123,6 @@ validate_data <- function(data) {
   return(TRUE)
 }
 
-# 数据预处理
-cat("正在清洗数据...\n")
-data_clean <- data %>%
-  # 去除完全空白的行
-  filter(!(is.na(category) & is.na(subcategory) & is.na(therapy) & is.na(count))) %>%
-  # 去除category为空的行
-  filter(!is.na(category) & category != "") %>%
-  # 将空值转换为空白字符串，确保 count 为数值
-  mutate(
-    category = as.character(category),
-    subcategory = ifelse(is.na(subcategory) | subcategory == "", "", as.character(subcategory)),
-    therapy = ifelse(is.na(therapy) | therapy == "", "", as.character(therapy)),
-    count = as.numeric(count),
-    count = ifelse(is.na(count) | count <= 0, 1, count),
-    # 规范化文本（现在 normalize_text 支持向量化操作）
-    category = normalize_text(category),
-    subcategory = normalize_text(subcategory),
-    therapy = normalize_text(therapy)
-  )
-
-# 添加highlight列（如果不存在）
-if (!"highlight" %in% names(data_clean)) {
-  data_clean$highlight <- "Yes"
-} else {
-  data_clean <- data_clean %>%
-    mutate(highlight = ifelse(is.na(highlight) | highlight == "", "Yes", as.character(highlight)))
-}
-
-# 添加rotation列（如果不存在），规范化为小写
-if (!"rotation" %in% names(data_clean)) {
-  data_clean$rotation <- "up"
-} else {
-  data_clean <- data_clean %>%
-    mutate(rotation = tolower(ifelse(is.na(rotation) | rotation == "", "up", as.character(rotation))),
-           rotation = ifelse(rotation == "down", "down", "up"))  # 只允许"up"或"down"
-}
-
-# 获取分类的原始顺序
-category_order <- unique(data_clean$category)
-cat("分类数量:", length(category_order), "\n")
-cat("分类列表:", paste(category_order, collapse = ", "), "\n")
-
 # ============================================================================
 # 数据加载和预处理
 # ============================================================================
@@ -211,6 +169,48 @@ data <- tryCatch({
 
 # 验证数据
 validate_data(data)
+
+# 数据预处理
+cat("正在清洗数据...\n")
+data_clean <- data %>%
+  # 去除完全空白的行
+  filter(!(is.na(category) & is.na(subcategory) & is.na(therapy) & is.na(count))) %>%
+  # 去除category为空的行
+  filter(!is.na(category) & category != "") %>%
+  # 将空值转换为空白字符串，确保 count 为数值
+  mutate(
+    category = as.character(category),
+    subcategory = ifelse(is.na(subcategory) | subcategory == "", "", as.character(subcategory)),
+    therapy = ifelse(is.na(therapy) | therapy == "", "", as.character(therapy)),
+    count = as.numeric(count),
+    count = ifelse(is.na(count) | count <= 0, 1, count),
+    # 规范化文本（现在 normalize_text 支持向量化操作）
+    category = normalize_text(category),
+    subcategory = normalize_text(subcategory),
+    therapy = normalize_text(therapy)
+  )
+
+# 添加highlight列（如果不存在）
+if (!"highlight" %in% names(data_clean)) {
+  data_clean$highlight <- "Yes"
+} else {
+  data_clean <- data_clean %>%
+    mutate(highlight = ifelse(is.na(highlight) | highlight == "", "Yes", as.character(highlight)))
+}
+
+# 添加rotation列（如果不存在），规范化为小写
+if (!"rotation" %in% names(data_clean)) {
+  data_clean$rotation <- "up"
+} else {
+  data_clean <- data_clean %>%
+    mutate(rotation = tolower(ifelse(is.na(rotation) | rotation == "", "up", as.character(rotation))),
+           rotation = ifelse(rotation == "down", "down", "up"))  # 只允许"up"或"down"
+}
+
+# 获取分类的原始顺序
+category_order <- unique(data_clean$category)
+cat("分类数量:", length(category_order), "\n")
+cat("分类列表:", paste(category_order, collapse = ", "), "\n")
 
 # ============================================================================
 # 准备旭日图数据
