@@ -18,24 +18,27 @@ Sunburst/
 - ggplot2 - 优雅的图形语法库
 - dplyr - 数据处理库
 - tidyr - 数据整理库
+- readxl - Excel文件读取库
 
 ## 安装依赖
 
 在R控制台中运行：
 ```R
-install.packages(c("plotly", "ggplot2", "dplyr", "tidyr"))
+install.packages(c("plotly", "ggplot2", "dplyr", "tidyr", "readxl"))
 ```
 
 ## 使用说明
 
-1. 在 `data/` 目录中放置数据文件（CSV格式）
+1. 在 `data/` 目录中放置数据文件（支持 Excel .xlsx 格式）
 2. 在 `scripts/` 目录中编写R脚本
 3. 运行脚本生成旭日图
-4. 输出图表将保存在 `output/` 目录中
+4. 输出图表将以 PNG 格式保存在 `output/` 目录中
 
 ## 示例
 
-详见 `scripts/example_sunburst.R` 文件
+详见以下脚本文件：
+- `scripts/旭日图.R` - 主要的旭日图绘制脚本
+- `scripts/Reference.R` - 参考脚本
 
 ## 开发工具
 - R语言 (≥ 3.6.0)
